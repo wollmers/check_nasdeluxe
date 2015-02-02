@@ -32,6 +32,8 @@ use HTTP::Cookies;
 use JSON;
 use Data::Dumper;
 
+my $debug = 0;
+
 my $ua = new LWP::UserAgent;
 $ua->agent('check_nasdeluxe Nagios plugin');
 $ua->cookie_jar( { } );
@@ -83,8 +85,6 @@ if(!$aboutRes =~ m/^\<html\>/s) {
 	exit 3;
 }
 
-
-#my $sysStatRes = $ua->get("http://$host/adm/getmain.php?fun=systatus&update=1&262");
 my $sysStat = $ua->get("http://$host/adm/getmain.php?fun=nasstatus&update=1&262");
 
 
@@ -93,7 +93,6 @@ if(!$sysStat->is_success()) {
 	exit 2;
 }
 
-# POST http://192.168.1.30/adm/setmain.php fun=setstatus&action=update&params=%5B%5D
 my $sysStatDetail = $ua->post(
 	"http://$host/adm/setmain.php", 
 	{ 'fun'    => 'setstatus', 
@@ -106,11 +105,11 @@ if(!$sysStatDetail->is_success()) {
 	exit 2;
 }
 	
-print '$sysStatDetail: ',Dumper($sysStatDetail->content());
+print '$sysStatDetail: ',Dumper($sysStatDetail->content()) if $debug;
 
 my $sysStatObj = decode_json($sysStatDetail->content());
 
-print '$sysStatObj: ',Dumper($sysStatObj);
+print '$sysStatObj: ',Dumper($sysStatObj) if $debug;
 
 my $status = {};
 
@@ -123,7 +122,7 @@ sub read_values {
   for my $item (@$sysStatObj) {
     next unless ref($item);
     if (ref($item) =~ /ARRAY/) {
-      print 'is ARRAY-ref',"\n";
+      print 'is ARRAY-ref',"\n" if $debug;
       for my $values (@$item) {
         for my $entry (@{$values->{'value'}}) {
           $status->{$entry->{'key'}} = $entry->{'value'};
@@ -133,7 +132,7 @@ sub read_values {
   }
 }
 
-print Dumper($status);
+print Dumper($status) if $debug;
 
 # cpu_temp $sysStatObj->{'cup_temp1'}, cpu_load  $sysStatObj->{'cpu_loading'}, chassis temp  $sysStatObj->{'sys_temp'}[0]->{'temp'}
 
@@ -167,12 +166,18 @@ checkVal('cpu_load', $status->{'cpu_loading'}, 4 , 8);
 checkVal('sys_temp1', $status->{'sys_temp 1'}, 55 , 70);
 checkVal('sys_temp2', $status->{'sys_temp 2'}, 55 , 70);
 checkVal('sys_temp3', $status->{'sys_temp 3'}, 55 , 70);
-#TODO: psu 'OK'
 
 
-#print Dumper($sysStatObj);
+#TODO: psu 'OK' 'psu' => 'OK'
+if ($status->{'psu'} !~ m/^OK$/) {
+	print "CRITICAL: psu | $status->{'psu'} \n";
+	exit 2;
+}
 
-if (0) {
+
+print Dumper($sysStatObj) if $debug;
+
+if (1) {
 # RAID
 # #####
 my $sysStatRaid = $ua->get("http://$host/adm/getmain.php?fun=raid&action=getraidlist");
@@ -184,7 +189,8 @@ if(!$sysStatRaid->is_success()) {
 
 my $sysRaidObj = decode_json($sysStatRaid->content());
 
-#print Dumper( $sysRaidObj );
+print '$sysRaidObj: ', Dumper( $sysRaidObj ) if $debug;
+
 for my $raid (@{$sysRaidObj->{'raid_list'}}) {
 	if ($raid->{'raid_status'} ne 'Healthy') {
 		print "CRITICAL: RAID id:$raid->{'raid_id'} is not marked as HEALTHY anymore\n";
@@ -202,17 +208,19 @@ if(!$sysStatDisks->is_success()) {
 }
 
 my $sysDiskObj = decode_json($sysStatDisks->content());
+print '$sysDiskObj: ', Dumper( $sysDiskObj ) if $debug;
 
-#print Dumper( $sysDiskObj );exit;
-for my $tray (@{$sysDiskObj->{'disk_data'}}) {
-	if ($tray->{'s_status'} ne 'N/A' && $tray->{'linkrate'} !~ /SATA\s+6Gb/) {
+for my $group (@{$sysDiskObj->{'disk_data'}}) {
+  for my $tray (@{$group->{'disks'}}) {
+	if (exists $tray->{'link'} && $tray->{'link'} !~ /SATA\s+3\s*Gb/) {
 		print "WARNING: link rate runs with slower speed\n";
 		exit 1;
 	}
-	if ($tray->{'s_status'} ne 'N/A' && $tray->{'badblock'} ne '0') {
-		print "CRITICAL: tray:$tray->{'trayno'} disk $tray->{'model'} has bad blocks\n";
+	if (exists $tray->{'status'} && $tray->{'status'}->{'bad'} ne '0') {
+		print "CRITICAL: tray:$tray->{'tray_no'} disk $tray->{'disk_name'} has bad blocks\n";
 		exit 2;
 	}
+  }
 }
 
 }
@@ -220,5 +228,5 @@ for my $tray (@{$sysDiskObj->{'disk_data'}}) {
 # else everything is fine
 my $temp = $status->{'cup_temp'};
 $temp =~ s/^\s*([\.0-9]+).*$/$1/;
-print "OK: Thecus NAS running normally|cpuLoad=$status->{'cpu_loading'}, cpuTemp=$temp, RAID: OK\n";
+print "OK: NASdeluxe running normally|cpuLoad=$status->{'cpu_loading'}, cpuTemp=$temp, PSU: $status->{'psu'}, RAID: OK\n";
 exit 0;
